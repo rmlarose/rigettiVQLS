@@ -1,2 +1,3 @@
-# rigettiVQLS
-VQLS Demo on Rigetti's new computers (Feb. 2020)
+# VQLS on Rigetti
+
+VQLS Demo on Rigetti's new computers (Feb. 2020).
