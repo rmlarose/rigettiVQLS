@@ -19,9 +19,6 @@ ymat = np.array([[0, -1j], [1j, 0]], dtype=np.complex64)
 zmat = np.array([[1, 0], [0, -1]], dtype=np.complex64)
 pauli_dict = {"I": imat, "X": xmat, "Y": ymat, "Z": zmat}
 
-# ============================================================
-# Functions for viewing matrices and vectors of linear systems
-# ============================================================
 
 def tensor(*matrices) -> np.ndarray:
     """Returns the tensor product of all matrices."""
@@ -238,3 +235,125 @@ def effective_hamiltonian(Acoeffs: List[complex],
     
     return drop_zero(combine_paulis(ham))
 
+
+# ==================================================
+# Functions for computing <H> with a quantum circuit
+# ==================================================
+
+def yansatz(computer):
+    """Returns a circuit with a product state ansatz."""
+    n = len(computer.qubits())
+    # Get a circuit and classical memory register
+    circ = Program()
+    creg = circ.declare("ro", memory_type="BIT", memory_size=n)
+
+    # Define parameters for the ansatz
+    angles = circ.declare("theta", memory_type="REAL", memory_size=n)
+
+    # Add the ansatz
+    circ += [gates.RY(angles[ii], computer.qubits()[ii]) for ii in range(n)]
+    
+    return circ, creg
+
+
+def expectation(angles: List[float], 
+                coeff: complex, 
+                pauli: str,
+                ansatz: pyquil.Program,
+                creg: pyquil.quilatom.MemoryReference,
+                computer: pyquil.api.QuantumComputer,
+                shots: int = 10000,
+                verbose: bool = False) -> float:
+    """Returns coeff * <\theta| paulii |\theta>.
+    
+    Args:
+        angles: List of angles at which to evaluate coeff * <theta| pauli |theta>.
+        coeff: Coefficient of Pauli term.
+        pauli: Pauli string.
+        ansatz: pyQuil program representing the ansatz state.
+        creg: Classical register of ansatz to measure into.
+        computer: QuantumComputer to execute the circuit on.
+        shots: Number of times to execute the circuit (sampling statistics).
+        verbose: Option for visualization/debugging.
+    """
+    if np.isclose(np.imag(coeff), 0.0):
+        coeff = np.real(coeff)
+
+    if set(pauli) == {"I"}:
+        return coeff
+    
+    # Set up the circuit
+    circuit = ansatz.copy()
+    qubits = computer.qubits()
+    measured = []
+    for (q, p) in enumerate(pauli):
+        if p == "X":
+            circuit += [gates.H(qubits[q]), gates.MEASURE(qubits[q], creg[q])]
+            measured.append(qubits[q])
+        elif p == "Y":
+            circuit += [gates.S(qubits[q]), gates.H(qubits[q]), gates.MEASURE(qubits[q], creg[q])]
+            measured.append(qubits[q])
+        elif p == "Z":
+            circuit += [gates.MEASURE(qubits[q], creg[q])]
+            measured.append(qubits[q])
+    
+    if verbose:
+        print(f"Computing {coeff} x <theta|{pauli}|theta>...")
+        print("\nCircuit to be executed:")
+        print(circuit)
+    
+    # Execute the circuit
+    circuit.wrap_in_numshots_loop(shots)
+    executable = computer.compile(circuit)
+    res = computer.run(executable, memory_map={"theta": angles})
+    
+    if verbose:
+        print("\nResults:")
+        print(f"{len(res)} total measured bit strings.")
+        print(res)
+    
+    # Do the postprocessing
+    tot = 0.0
+    for vals in res:
+        tot += (-1)**sum(vals)
+    return coeff * tot / shots
+
+
+# TODO: Utilize simulatenous measurements
+def energy(angles, hamiltonian, ansatz, creg, computer, shots=10000, min_weight=0, verbose=False):
+    """Returns <theta| H |theta>.
+    
+    Args:
+        angles: List of angles at which to evaluate <theta| H |theta>.
+        hamiltonian: List[Tuple] of (coeff, pauli) pairs.
+        ansatz: pyQuil program representing the ansatz state.
+        creg: Classical register of ansatz to measure into.
+        computer: QuantumComputer to execute the circuit on.
+        shots: Number of times to execute the circuit (sampling statistics).
+        min_weight: If a term has abs(coeff) < min_weight, skip the term.
+                    Default value = 0, i.e., all terms are present in computation.
+        verbose: Option for visualization/debugging.
+    """
+    value = 0.0
+    for (coeff, pauli) in hamiltonian:
+        if abs(coeff) >= min_weight:
+            value += expectation(angles, coeff, pauli, ansatz, creg, computer, shots, verbose)
+    return value
+
+# ==========================================================================
+# Function for getting the wavefunction from the ansatz + optimal parameters
+# ==========================================================================
+
+def qsolution(ansatz, opt_angles):
+    """Returns the wavefunction of the ansatz at the optimal angles."""
+    prog = Program()
+    memory_map = {"theta": opt_angles}
+    for name, arr in memory_map.items():
+        for index, value in enumerate(arr):
+            prog += gates.MOVE(gates.MemoryReference(name, offset=index), value)
+
+    ansatz = prog + ansatz
+    soln = pyquil.quil.percolate_declares(ansatz)
+
+    wfsim = pyquil.api.WavefunctionSimulator()
+    return wfsim.wavefunction(soln).amplitudes

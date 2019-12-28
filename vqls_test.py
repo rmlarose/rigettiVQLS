@@ -1,8 +1,10 @@
 """Unit tests for VQLS using effective Hamiltonian."""
 
 from itertools import product
+from math import pi
 
 import numpy as np
+from pyquil import get_qc
 
 import vqls
 
@@ -269,3 +271,84 @@ def test_effective_hamiltonian_exampleLS2():
     Amat_correct = vqls.matrix(Acoeffs, Aterms)
     effective_hamiltonian_test_helper(Acoeffs, Aterms, Amat_correct,
                                Bcoeffs, Bterms, bvec_correct)
+
+
+    
+# =================================
+# Test computing expectation values
+# =================================
+
+def test_expectation_three_qubits():
+    """Tests several expectation values for a three qubit circuit."""
+    n = 3
+    qcomputer = f"Aspen-7-{n}Q-B"
+    lattice = get_qc(qcomputer, as_qvm=True)
+    circ, creg = vqls.yansatz(lattice)
+    SHOTS = 10000
+    tol = 1e-1  # Set smaller than necessary to be safe
+    assert np.isclose(vqls.expectation([0] * n, 1, "ZZZ", circ, creg,
+                                       lattice, shots=SHOTS), 1.0, atol=tol)
+    assert np.isclose(vqls.expectation([0] * n, 0.8675309, "ZZZ", circ, creg,
+                                       lattice, shots=SHOTS), 0.8675309, atol=tol)
+    assert np.isclose(vqls.expectation([0] * n, 1, "XII", circ, creg,
+                                       lattice, shots=SHOTS), 0.0, atol=tol)
+    assert np.isclose(vqls.expectation([pi / 2, 0, 0], 1, "XII", circ, creg,
+                                       lattice, shots=SHOTS), 1.0, atol=tol)
+    assert np.isclose(vqls.expectation([pi / 2, pi / 2, 0], 1, "XXI", circ, creg,
+                                       lattice, shots=SHOTS), 1.0, atol=tol)
+    assert np.isclose(vqls.expectation([pi / 2, pi / 2, pi / 2], 1, "XXX", circ, creg,
+                                       lattice, shots=SHOTS), 1.0, atol=tol)
+    assert np.isclose(vqls.expectation([pi / 2, pi / 2, 0], 1, "XXZ", circ, creg,
+                                       lattice, shots=SHOTS), 1.0, atol=tol)
+
+
+def test_energy1():
+    """Tests energy computation for identity Hamiltonian."""
+    test_hamiltonian = [(1.0, "II")]
+    test_computer = get_qc("Aspen-7-2Q-B", as_qvm=True)
+    test_circuit, test_creg = vqls.yansatz(test_computer)
+    assert np.isclose(
+        vqls.energy([0, 0], test_hamiltonian, test_circuit, test_creg, test_computer, shots=10000, verbose=False),
+        1.0,
+        atol=1e-5
+    )
+
+
+def test_energy2():
+    """Tests energy for simple Hamiltonian."""
+    test_hamiltonian = [(1.0, "II"), (-0.1, "IX")]
+    test_computer = get_qc("Aspen-7-2Q-B", as_qvm=True)
+    test_circuit, test_creg = vqls.yansatz(test_computer)
+    assert np.isclose(
+        vqls.energy([0, 0], test_hamiltonian, test_circuit, test_creg, test_computer, shots=10000, verbose=False),
+        1.0,
+        1e-2
+    )
+    assert np.isclose(
+        vqls.energy([0, pi / 2], test_hamiltonian, test_circuit, test_creg, test_computer, shots=10000, verbose=False),
+        0.9,
+        1e-2
+    )
+
+
+def test_energy_with_min_weight():
+    """Tests computing energy of Hamiltonian with small weight terms."""
+    test_hamiltonian = [(1.0, "II"), (-0.1, "II"), (-0.01, "II")]
+    test_computer = get_qc("Aspen-7-2Q-B", as_qvm=True)
+    test_circuit, test_creg = vqls.yansatz(test_computer)
+    assert np.isclose(
+        vqls.energy([0, 0], test_hamiltonian, test_circuit, test_creg, test_computer, shots=10000, min_weight=0.1),
+        0.9,
+        1e-2
+    )
+    assert np.isclose(
+        vqls.energy([0, 0], test_hamiltonian, test_circuit, test_creg, test_computer, shots=10000, min_weight=0.01),
+        0.89,
+        1e-2
+    )
+    assert np.isclose(
+        vqls.energy([0, 0], test_hamiltonian, test_circuit, test_creg, test_computer, shots=10000, min_weight=2.0),
+        0.0,
+        1e-2
+    )
+    
