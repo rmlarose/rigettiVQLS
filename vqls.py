@@ -1,6 +1,7 @@
 """Code for running VQLS on Rigetti's quantum computers."""
 
 from itertools import product
+from copy import deepcopy
 from typing import (List, Tuple)
 
 import numpy as np
@@ -256,6 +257,52 @@ def yansatz(computer):
     return circ, creg
 
 
+def yansatzCZ(computer):
+    """Returns a Ry ansatz with some entanglement."""
+    # Grab the qubits
+    qubits = tuple(computer.qubits())
+    n = len(qubits)
+    
+    # Get a circuit and classical memory register
+    circ = Program()
+    creg = circ.declare("ro", memory_type="BIT", memory_size=n)
+
+    # Define parameters for the ansatz
+    angles = circ.declare("theta", memory_type="REAL", memory_size=2 * n)
+
+    # Add the ansatz
+    circ += [gates.RY(angles[ii], qubits[ii]) for ii in range(n)]
+    circ += [gates.CZ(qubits[ii], qubits[ii + 1]) for ii in range(n - 1)]
+    circ += [gates.RZ(angles[ii], qubits[ii]) for ii in range(n)]
+    circ += [gates.CZ(qubits[-ii - 1], qubits[-ii - 2]) for ii in range(n - 1)]
+    
+    return circ, creg
+
+
+def yansatzCZrotations(computer):
+    """Returns a Ry ansatz with some entanglement."""
+    # Grab the qubits
+    qubits = tuple(computer.qubits())
+    n = len(qubits)
+    
+    # Get a circuit and classical memory register
+    circ = Program()
+    creg = circ.declare("ro", memory_type="BIT", memory_size=n)
+
+    # Define parameters for the ansatz
+    angles = circ.declare("theta", memory_type="REAL", memory_size=3 * n)
+
+    # Add the ansatz
+    circ += [gates.RY(angles[ii], qubits[ii]) for ii in range(n)]
+    circ += [gates.CZ(qubits[ii], qubits[ii + 1]) for ii in range(n - 1)]
+    circ += [gates.RZ(angles[ii], qubits[ii]) for ii in range(n)]
+    circ += [gates.CZ(qubits[ii + 1], qubits[ii + 2]) for ii in range(n - 2)]
+    circ += [gates.RY(angles[ii], qubits[ii]) for ii in range(n)]
+    circ += [gates.CZ(qubits[ii], qubits[ii + 1]) for ii in range(n - 1)]
+    
+    return circ, creg
+
+
 def expectation(angles: List[float], 
                 coeff: complex, 
                 pauli: str,
@@ -278,29 +325,37 @@ def expectation(angles: List[float],
     """
     if np.isclose(np.imag(coeff), 0.0):
         coeff = np.real(coeff)
-
+    
     if set(pauli) == {"I"}:
         return coeff
+        
+    angles = list(angles)
+    angles = deepcopy(angles)
+    
+    if verbose:
+        print("DEBUG holy fuck")
+        print(f"type(angles) = {type(angles)}")
+        print("angles =", angles)
     
     # Set up the circuit
     circuit = ansatz.copy()
     qubits = computer.qubits()
     measured = []
     for (q, p) in enumerate(pauli):
+        if p in ("X", "Y", "Z"):
+            measured.append(qubits[q])
         if p == "X":
             circuit += [gates.H(qubits[q]), gates.MEASURE(qubits[q], creg[q])]
-            measured.append(qubits[q])
         elif p == "Y":
             circuit += [gates.S(qubits[q]), gates.H(qubits[q]), gates.MEASURE(qubits[q], creg[q])]
-            measured.append(qubits[q])
         elif p == "Z":
             circuit += [gates.MEASURE(qubits[q], creg[q])]
-            measured.append(qubits[q])
     
     if verbose:
         print(f"Computing {coeff} x <theta|{pauli}|theta>...")
         print("\nCircuit to be executed:")
         print(circuit)
+        print(f"type(angles) = {type(angles)}")
     
     # Execute the circuit
     circuit.wrap_in_numshots_loop(shots)
@@ -357,3 +412,251 @@ def qsolution(ansatz, opt_angles):
 
     wfsim = pyquil.api.WavefunctionSimulator()
     return wfsim.wavefunction(soln).amplitudes
+
+
+# =======================================
+# Functions for simultaneous measurements
+# =======================================
+
+def is_sim_meas(op1: str, op2: str) -> bool:
+    """Returns True if op1 and op2 can be simultaneously measured.
+    
+    Args:
+        op1: Pauli string on n qubits.
+        op2: Pauli string on n qubits.
+    
+    Examples:
+        is_sim_meas("IZI", "XIX") -> True
+        
+        is_sim_meas("XZ", "XX") -> False
+    """
+    if len(op1) != len(op2):
+        raise ValueError(
+            "Pauli operators act on different numbers of qubits."
+        )
+    
+    for (a, b) in zip(op1, op2):
+        if a != b and a != "I" and b != "I":
+            return False
+    return True
+
+
+def can_be_grouped_with(op: str, group: List[str]) -> bool:
+    """Returns True if op can be simultaneously measured with every
+    operator in the given group, else False.
+    
+    Args:
+        op: A Pauli operator.
+        group: A list of Pauli operators.
+    """
+    for other in group:
+        if not is_sim_meas(op, other):
+            return False
+    return True
+
+
+def is_sim_meas_group(group: List[str]) -> bool:
+    """Returns True if every operator within the set is pairwise simultaneously measurable."""
+    for ii in range(len(group) - 1):
+        for jj in range(ii + 1, len(group)):
+            if not is_sim_meas(group[ii], group[jj]):
+                return False
+    return True
+
+
+def split_ham_to_coeffs_and_paulis(ham):
+    """Returns list of coeffs and paulis from input hamiltonian."""
+    ham = np.array(ham)
+    coeffs = list(map(lambda x: float(x), ham[:, 0]))
+    paulis = list(ham[:, 1])
+
+    return coeffs, paulis
+
+
+def group_greedy(ham, randomized: bool = True):
+    """Groups the hamiltonian terms into simultaneously measurable sets using a greedy approach."""
+    # Shuffle the terms in the Hamiltonian, if desired
+    if randomized:
+        np.random.shuffle(ham)
+    
+    # Split into coeffs and Paulis for convenience
+    coeffs, paulis = split_ham_to_coeffs_and_paulis(ham)
+    
+    # Do the grouping
+    groups = [[paulis.pop(0)]]
+    cgroups = [[coeffs.pop(0)]]
+
+    maxit = len(paulis)
+    it = 0
+    while paulis:
+        added = False
+        for (ii, group) in enumerate(groups):
+            if can_be_grouped_with(paulis[0], group):
+                groups[ii].append(paulis.pop(0))
+                cgroups[ii].append(coeffs.pop(0))
+                added = True
+                break
+        if not added and len(paulis) > 0:
+            groups.append([paulis.pop(0)])
+            cgroups.append([coeffs.pop(0)])
+
+        it += 1
+        if it > maxit:
+            raise SystemError("Internal error with group_greedy algorithm, max iterations exceeded.")
+
+    if not (coeffs == [] and paulis == []):
+        print(coeffs)
+        print(paulis)
+        raise SystemError("Internal error with group_greedy algorithm.")
+
+    # Recombine into Hamiltonian
+    ham = []
+    for cgroup, group in zip(cgroups, groups):
+        ham.append(
+            list(zip(cgroup, group))
+        )
+    return ham
+
+
+def measure_group(
+    angles: List[float],
+    group,
+    ansatz: pyquil.Program,
+    creg: pyquil.quilatom.MemoryReference,
+    computer: pyquil.api.QuantumComputer,
+    shots: int = 10_000,
+    verbose: bool = False
+) -> float:
+    """Returns the expectation over all Pauli operators in the group by
+    executing a single circuit.
+    
+    Args:
+        angles: List of angles at which to evaluate coeff * <theta| pauli |theta>.
+        group: Group of simultaneously measurable Pauli operators.
+               Format:
+                   [(coeff1, pauli1),
+                    (coeff2, pauli2),
+                    ...
+                    (coeffn, paulin)]
+        ansatz: pyQuil program representing the ansatz state.
+        creg: Classical register of ansatz to measure into.
+        computer: QuantumComputer to execute the circuit on.
+        shots: Number of times to execute the circuit (sampling statistics).
+    """
+    angles = list(angles)
+    angles = deepcopy(angles)
+    
+    # Split the group into coefficients and paulis
+    coeffs, paulis = split_ham_to_coeffs_and_paulis(group)
+
+    if not is_sim_meas_group(paulis):
+        raise ValueError("Input group is not simultaneously measurable.")
+    
+    # Squash the group into one Pauli string to determine the correct measurements
+    #  Note this is only possible by assumption that the group is simultaneously measurable
+    squashed = squash(paulis)
+    
+    # Add the right rotation + measurement operators to the ansatz
+    circuit = ansatz.copy()
+    qubits = computer.qubits()
+    to_measure = []
+    for (q, p) in enumerate(squashed):
+        if p in ("X", "Y", "Z"):
+            to_measure.append(q)
+        if p == "X":
+            circuit += [gates.H(qubits[q])]
+        elif p == "Y":
+            circuit += [gates.S(qubits[q]), gates.H(qubits[q])]
+    
+    # Add the terminal measurements
+    #  Note we do it this way since all measurements *must* be at the end of the circuit on hardware
+    for q in to_measure:
+        circuit += [gates.MEASURE(qubits[q], creg[q])]
+            
+    # Execute the circuit
+    circuit.wrap_in_numshots_loop(shots)
+    executable = computer.compile(circuit)
+    res = computer.run(executable, memory_map={"theta": angles})
+    
+    # Do the postprocessing
+    supports = [support(pauli) for pauli in paulis]
+    total = 0.0
+    for ii in range(len(supports)):
+        tot = 0.0
+        for vals in res:
+            sliced = islice(vals, supports[ii])
+            tot += (-1)**sum(sliced)
+        total += coeffs[ii] * tot / shots
+    return total
+
+
+def energy_sim(
+    angles: List[float],
+    ham,
+    ansatz: pyquil.Program,
+    creg: pyquil.quilatom.MemoryReference,
+    computer: pyquil.api.QuantumComputer,
+    shots: int = 10_000
+) -> float:
+    """Returns <H> using simultaneous measurements.
+    
+    Args:
+        angles: List of angles at which to evaluate coeff * <theta| pauli |theta>.
+        ham: List of groups of simultaneously measurable Pauli operators.
+               Format: ham = [group1, group2, ..., groupM] where each group has the form
+                   [(coeff1, pauli1),
+                    (coeff2, pauli2),
+                    ...
+                    (coeffn, paulin)]
+        REQUIRES: Each group to be simultaneously measurable.
+        ansatz: pyQuil program representing the ansatz state.
+        creg: Classical register of ansatz to measure into.
+        computer: QuantumComputer to execute the circuit on.
+        shots: Number of times to execute the circuit (sampling statistics).
+    """
+    tot = 0.0
+    for group in ham:
+        tot += measure_group(angles, group, ansatz, creg, computer, shots)
+    return tot
+
+
+def char(cA, cB):
+    """Returns the appropriate single qubit pauli character when merging."""
+    if cA == "I":
+        return cB
+    return cA
+
+
+def merge(opA: str, opB: str) -> str:
+    """Merges two pauli operators into a single squashed operator."""
+    new = ""
+    for (cA, cB) in zip(opA, opB):
+        new += char(cA, cB)
+    return new
+
+
+def squash(group):
+    """Merges a group of n puali operators into a single squashed operator."""
+    squashed = group[0]
+    for pauli in group[1:]:
+        squashed = merge(squashed, pauli)
+    return squashed
+
+
+def support(pauli: str):
+    """Returns indices where the Pauli string is non-identity."""
+    has_support = lambda c: c != "I"
+    inds = []
+    for (i, p) in enumerate(pauli):
+        if has_support(p):
+            inds.append(i)
+    return inds
+
+
+def islice(vals, inds):
+    """Returns a list of values from `vals` at the indices in `inds`."""
+    sliced = []
+    for (i, v) in enumerate(vals):
+        if i in inds:
+            sliced.append(v)
+    return sliced

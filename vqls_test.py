@@ -351,4 +351,293 @@ def test_energy_with_min_weight():
         0.0,
         1e-2
     )
+
     
+# ========================================
+# Unit tests for simultaneous measurements
+# ========================================
+
+def test_merge():
+    assert vqls.merge("IX", "ZI") == "ZX"
+    assert vqls.merge("ZX", "ZI") == "ZX"
+    assert vqls.merge("IIZ", "ZZI") == "ZZZ"
+
+
+def test_squash():
+    assert vqls.squash(["III", "IXY", "ZII"]) == "ZXY"
+    assert vqls.squash(["I", "Z"]) == "Z"
+    assert vqls.squash(
+        ["IIII", "IIXI", "ZXII", "IIIY"]
+    ) == "ZXXY"
+    assert vqls.squash(["IIIII", "IIIXZ"]) == "IIIXZ"
+    assert vqls.squash(["IXXI", "ZIII"]) == "ZXXI"
+
+def test_support():
+    assert vqls.support("III") == []
+    assert vqls.support("IXY") == [1, 2]
+    assert vqls.support("ZZI") == [0, 1]
+
+
+def test_supports():
+    paulis = ["III", "IXZ", "ZZI", "XII", "IYI", "IIY", "XYZ"]
+    supports = [vqls.support(p) for p in paulis]
+    assert supports == [
+        [],
+        [1, 2],
+        [0, 1],
+        [0],
+        [1],
+        [2],
+        [0, 1, 2]
+    ]
+    
+def test_islice():
+    vals = [0, 1, 2, 3, 4]
+    assert vqls.islice(vals, [0, 1, 4]) == [0, 1, 4]
+    assert vqls.islice(vals, [0]) == [0]
+    assert vqls.islice(vals, []) == []
+
+def test_is_sim_meas():
+    """Unit test for determining if two paulis can be measured simultaneously."""
+    # Cases which can be measured simultaneously
+    assert vqls.is_sim_meas("III", "IXZ")
+    assert vqls.is_sim_meas("IZZ", "ZZI")
+    assert vqls.is_sim_meas("X" * 20, "X" * 20)
+    assert vqls.is_sim_meas("YYIZZ", "IIXZI")
+    
+    # Cases which cannot be measured simultaneously
+    assert not vqls.is_sim_meas("X", "Z")
+    assert not vqls.is_sim_meas("Z", "X")
+    assert not vqls.is_sim_meas("YY", "YZ")
+    assert not vqls.is_sim_meas("XIZ", "IIY")
+
+
+def test_can_be_grouped_with():
+    """Unit test for measurments with a group."""
+    # Cases which the grouping works
+    assert vqls.can_be_grouped_with("IIZ", ["ZZI", "IZI", "ZZZ"])
+    assert vqls.can_be_grouped_with("IIZ", [])
+    assert vqls.can_be_grouped_with("XII", ["XXX", "IXI", "IXX"])
+    assert vqls.can_be_grouped_with("Z", ["I", "Z"])
+    assert vqls.can_be_grouped_with("IXYZ", ["IIII", "XXYZ"])
+    
+    # Cases which the grouping doesn't work
+    assert not vqls.can_be_grouped_with("ZZI", ["ZZZ", "XZI"])
+    assert not vqls.can_be_grouped_with("Z", ["I", "X"])
+    assert not vqls.can_be_grouped_with("IXYZ", ["IIII", "XXYZ", "IIIX"])
+    assert not vqls.can_be_grouped_with("XXX", ["YII", "IIZ"])
+
+
+def test_is_sim_meas_group():
+    """Unit test for seeing if a group is simultaneously measurable."""
+    # Groups which are simultaneously measurable
+    assert vqls.is_sim_meas_group(["IXZ", "IIZ", "IXI"])
+    assert vqls.is_sim_meas_group(["IIZI", "ZZIZ", "ZZZZ", "ZIZI"])
+    assert vqls.is_sim_meas_group(["I", "Z"])
+    assert vqls.is_sim_meas_group(["IX", "XI"])
+    
+    # Groups which are not simultaneously measurable
+    assert not vqls.is_sim_meas_group(["ZZZ", "XXX"])
+    assert not vqls.is_sim_meas_group(["I", "X", "Z"])
+    assert not vqls.is_sim_meas_group(["IZY", "IZI", "ZZX"])
+
+def test_split_ham():
+    ham = [
+        [1, "IIZ"],
+        [2, "XIZ"],
+        [3, "YYY"]
+    ]
+    coeffs, paulis = vqls.split_ham_to_coeffs_and_paulis(ham)
+    assert coeffs == [1.0, 2.0, 3.0]
+    assert paulis == ['IIZ', 'XIZ', 'YYY']
+
+
+def test_greedy_group():
+    ham = [
+        [1, "IIZ"],
+        [2, "XIZ"],
+        [3, "YYY"]
+    ]
+    grouped = vqls.group_greedy(ham, randomized=False)
+
+    assert len(grouped) == 2
+    assert grouped == [[(1.0, 'IIZ'), (2.0, 'XIZ')], [(3.0, 'YYY')]]
+
+
+def test_greedy_group2():
+    ham = [
+        [1, "IIZ"],
+        [2, "IIX"],
+        [3, "ZIZ"]
+    ]
+    grouped = vqls.group_greedy(ham, randomized=False)
+    assert len(grouped) == 2
+    assert grouped == [[(1.0, 'IIZ'), (3.0, 'ZIZ')], [(2.0, 'IIX')]]
+
+
+def test_greedy_group3():
+    ham = [
+        [1, "IIZ"],
+        [2, "IIX"],
+        [3, "ZIZ"],
+        [4, "XII"]
+    ]
+    grouped = vqls.group_greedy(ham, randomized=False)
+    assert len(grouped) == 2
+    assert grouped == [[(1.0, 'IIZ'), (3.0, 'ZIZ')], [(2.0, 'IIX'), (4.0, 'XII')]]
+
+
+def test_greedy_group4():
+    ham = [
+        [1, "IIZ"],
+        [2, "IIX"],
+        [3, "ZIZ"],
+        [4, "XII"],
+        [5, "IZI"]
+    ]
+    grouped = vqls.group_greedy(ham, randomized=False)
+    assert len(grouped) == 2
+    assert grouped == [[(1.0, 'IIZ'), (3.0, 'ZIZ'), (5.0, 'IZI')], [(2.0, 'IIX'), (4.0, 'XII')]]
+
+
+def test_greedy_group5():
+    ham = [
+        [1, "IIZ"],
+        [2, "IIX"],
+        [3, "ZIZ"],
+        [4, "XII"],
+        [5, "IZI"],
+        [6, "ZZZ"],
+        [7, "XXX"],
+        [8, "YYY"]
+    ]
+    grouped = vqls.group_greedy(ham, randomized=False)
+    assert len(grouped) == 3
+
+def test_measure_group_identity_2q_zgroup():
+    # Define number of qubits
+    n = 2
+
+    # Get a group to measure
+    group = [(1, "IZ"), (-1, "ZI"), (1, "ZZ")]
+
+    # Get a quantum computer to run on
+    qcomputer = f"Aspen-7-{n}Q-B"
+    lattice = get_qc(qcomputer, as_qvm=True)  # Change to as_qvm=False to run on QC. Must have reservation.
+
+    # Get an ansatz and set the angles
+    circ, creg = vqls.yansatz(lattice)
+    angles = [0, 0]
+
+    # Compute expectation via individual terms
+    itot = 0.
+    for coeff, pauli in group:
+        itot += vqls.expectation(angles, coeff, pauli, circ, creg, lattice, shots=10_000)
+    
+    # Compute expectation by grouping
+    gtot = vqls.measure_group(angles, group, circ, creg, lattice, shots=10_000)
+    
+    # Compare to each other
+    assert np.isclose(gtot, itot)
+    
+    # Compare to known answer
+    assert np.isclose(gtot, 1.0)
+
+
+def test_measure_group_identity_2q_xgroup():
+    # Define number of qubits
+    n = 2
+
+    # Get a group to measure
+    group = [(1, "IX"), (-1, "XI")]
+
+    # Get a quantum computer to run on
+    qcomputer = f"Aspen-7-{n}Q-B"
+    lattice = get_qc(qcomputer, as_qvm=True)  # Change to as_qvm=False to run on QC. Must have reservation.
+
+    # Get an ansatz and set the angles
+    circ, creg = vqls.yansatz(lattice)
+    angles = [0, 0]
+
+    # Compute expectation via individual terms
+    itot = 0.
+    for coeff, pauli in group:
+        itot += vqls.expectation(angles, coeff, pauli, circ, creg, lattice, shots=10_000)
+    
+    # Compute expectation by grouping
+    gtot = vqls.measure_group(angles, group, circ, creg, lattice, shots=10_000)
+    
+    # Compare to each other
+    assert np.isclose(gtot, itot, atol=0.05)
+    
+    # Compare to known answer
+    assert np.isclose(gtot, 0.0, atol=0.05)
+
+
+def test_measure_group_2q_xgroup():
+    # Define number of qubits
+    n = 2
+
+    # Get a group to measure
+    group = [(1, "IX"), (-1, "XI")]
+
+    # Get a quantum computer to run on
+    qcomputer = f"Aspen-7-{n}Q-B"
+    lattice = get_qc(qcomputer, as_qvm=True)  # Change to as_qvm=False to run on QC. Must have reservation.
+
+    # Get an ansatz and set the angles
+    circ, creg = vqls.yansatz(lattice)
+    angles = [pi / 2, 0]
+
+    # Compute expectation via individual terms
+    itot = 0.
+    for coeff, pauli in group:
+        itot += vqls.expectation(angles, coeff, pauli, circ, creg, lattice, shots=10_000)
+    
+    # Compute expectation by grouping
+    gtot = vqls.measure_group(angles, group, circ, creg, lattice, shots=10_000)
+    
+    # Compare to each other
+    assert np.isclose(gtot, itot, atol=0.05)
+    
+    # Compare to known anser
+    assert np.isclose(gtot, -1.0, atol=0.05)
+
+    
+def test_measure_group_2q_xgroup_loop_angles():
+    # Define number of qubits
+    n = 2
+
+    # Get a group to measure
+    group = [(1, "IX"), (-1, "XI")]
+
+    # Get a quantum computer to run on
+    qcomputer = f"Aspen-7-{n}Q-B"
+    lattice = get_qc(qcomputer, as_qvm=True)  # Change to as_qvm=False to run on QC. Must have reservation.
+
+    # Get an ansatz and set the angles
+    circ, creg = vqls.yansatz(lattice)
+    
+    for angles in ([0, 0], [pi / 4, pi / 4], [pi / 2, pi / 4],
+                   [pi / 4, pi / 2], [pi / 2, pi / 2]):
+        # Compute expectation via individual terms
+        itot = 0.
+        for coeff, pauli in group:
+            itot += vqls.expectation(angles, coeff, pauli, circ, creg, lattice, shots=10_000)
+
+        # Compute expectation by grouping
+        gtot = vqls.measure_group(angles, group, circ, creg, lattice, shots=10_000)
+
+        # Compare to each other
+        assert np.isclose(gtot, itot, atol=0.05)
+
+def test_measure_energy_sim():
+    """Unit test for measuring <H> using simultaneous measurements."""
+    ham = [[(1, "I"), (1, "X")], [(-1, "Z")]]
+    n = 1
+    qcomputer = f"{n}q-qvm"
+    lattice = get_qc(qcomputer, as_qvm=True)
+    circ, creg = vqls.yansatz(lattice)
+    angles = [0]
+    cost = vqls.energy_sim(angles, ham, circ, creg, lattice, shots=10_000)
+    assert np.isclose(cost, 0.0, atol=0.05)
